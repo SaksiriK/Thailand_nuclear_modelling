@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -10,38 +9,26 @@ import plotly.graph_objects as go
 
 def initialize_pdp_data():
     """
-    Initialize standard PDP data based on the Draft PDP 2024 baseline.
-    The draft points to ~54,546 MW Peak Demand and ~112,391 MW Contracted Capacity by 2037.
-    We extrapolate these figures out to 2056.
+    Initializes ONLY the Demand forecast. 
+    We assume no new non-nuclear plants are built.
     """
     years = list(range(2026, 2057)) # Extended to 2056
     
-    # 2026 starting point based on Draft PDP 2024 trajectory
     base_peak_mw = 36000 
-    base_capacity_mw = 56000
-    
-    # Growth rates assumed from the 2024-2037 trends
     demand_growth_rate = 1.025 # 2.5% annual growth
-    capacity_growth_rate = 1.018 # Slower capacity growth to show emerging gap
     
     data = []
     for i, year in enumerate(years):
         current_peak = base_peak_mw * (demand_growth_rate ** i)
-        current_capacity = base_capacity_mw * (capacity_growth_rate ** i)
         
         data.append({
             "Year": year,
-            "PDP Contracted Peak (MW)": round(current_peak, 2),
-            "Contracted Capacity (MW)": round(current_capacity, 2)
+            "Peak Demand (MW)": round(current_peak, 2)
         })
         
     return pd.DataFrame(data)
 
 def initialize_deployment_data():
-    """
-    Initialize empty deployment schedule for Chinese reactor models.
-    Updated with official CNNC Export Technologies.
-    """
     years = list(range(2026, 2057))
     df = pd.DataFrame({"Year": years})
     df["HPR1000 (1200 MW)"] = 0
@@ -55,22 +42,21 @@ def initialize_deployment_data():
 # ==========================================
 
 def check_password():
-    """Returns `True` if the user had the correct password."""
     def password_entered():
         if st.session_state["password"] == "nuclear2026":
             st.session_state["password_correct"] = True
-            del st.session_state["password"]  # Don't store password
+            del st.session_state["password"]  
         else:
             st.session_state["password_correct"] = False
 
     if "password_correct" not in st.session_state:
         st.text_input(
-            "Enter password to access the model:", type="password", on_change=password_entered, key="password"
+            "**🔒 Enter password to access the model:**", type="password", on_change=password_entered, key="password"
         )
         return False
     elif not st.session_state["password_correct"]:
         st.text_input(
-            "Enter password to access the model:", type="password", on_change=password_entered, key="password"
+            "**🔒 Enter password to access the model:**", type="password", on_change=password_entered, key="password"
         )
         st.error("😕 Password incorrect")
         return False
@@ -106,24 +92,84 @@ def render_tab_intro():
     
     > 💡 **Strategic Planning Note:** The times above represent *physical construction* only. An additional **2 to 3 years** should be factored into your timeline *prior* to construction for site licensing, environmental impact assessments (EIA), and public hearings in Thailand. 
     
-    Use the tabs above to adjust the baseline demand, plan your reactor deployment, and view the resulting capacity projections.
+    :red[Use the tabs above to adjust the baseline demand, plan your reactor deployment, and view the resulting capacity projections.]
     """)
 
 def render_tab_pdp():
-    st.header("Baseline Power Development Plan Data")
-    st.markdown("Modify the expected **PDP Contracted Peak (MW)** below. The model automatically recalculates Average Demand (via 39% buffer) and Energy Requirements on the Dashboard.")
+    st.header("Demand Forecast vs. Frozen Capacity Gap")
+    st.markdown("Assume no new non-nuclear plants are built after 2026. Modify your **Peak Demand (MW)** forecast on the left, and watch the Capacity Gap expand on the right.")
     
-    st.session_state.pdp_df = st.data_editor(
-        st.session_state.pdp_df,
-        width="content", 
-        hide_index=True,
-        num_rows="fixed",
-        column_config={
-            "Year": st.column_config.NumberColumn(width="small", format="%d", disabled=True),
-            "PDP Contracted Peak (MW)": st.column_config.NumberColumn(width="medium", format="%.1f"),
-            "Contracted Capacity (MW)": st.column_config.NumberColumn(width="medium", format="%.1f")
-        }
+    # User input for the frozen 2026 capacity
+    if "base_capacity" not in st.session_state:
+        st.session_state.base_capacity = 56000.0
+        
+    st.session_state.base_capacity = st.number_input(
+        "⚡ Current Grid Capacity in 2026 (MW) - Assuming NO new plants are built:",
+        value=st.session_state.base_capacity,
+        step=1000.0,
+        format="%.1f"
     )
+    
+    st.divider()
+    
+    col1, col2 = st.columns([1, 2.5])
+    
+    with col1:
+        st.subheader("1. Projected Peak Demand")
+        st.session_state.pdp_df = st.data_editor(
+            st.session_state.pdp_df,
+            width="stretch",
+            hide_index=True,
+            num_rows="fixed",
+            column_config={
+                "Year": st.column_config.NumberColumn(format="%d", disabled=True),
+                "Peak Demand (MW)": st.column_config.NumberColumn(format="%.1f")
+            }
+        )
+        
+    with col2:
+        st.subheader("2. The Expanding Capacity Gap")
+        
+        gap_df = st.session_state.pdp_df.copy()
+        
+        # Safety for cache
+        if "Peak Demand (MW)" not in gap_df.columns and "PDP Contracted Peak (MW)" in gap_df.columns:
+            gap_df = gap_df.rename(columns={"PDP Contracted Peak (MW)": "Peak Demand (MW)"})
+            
+        gap_df["Frozen Capacity"] = st.session_state.base_capacity
+        gap_df["Gap"] = (gap_df["Peak Demand (MW)"] - gap_df["Frozen Capacity"]).clip(lower=0)
+        
+        fig_gap = go.Figure()
+
+        fig_gap.add_trace(go.Scatter(
+            x=gap_df["Year"], y=gap_df["Frozen Capacity"],
+            mode='lines', name='Frozen 2026 Capacity',
+            line=dict(color='gray', width=3)
+        ))
+
+        fig_gap.add_trace(go.Scatter(
+            x=gap_df["Year"], y=gap_df["Peak Demand (MW)"],
+            mode='lines', name='Projected Peak Demand',
+            line=dict(color='red', width=3),
+            fill='tonexty', fillcolor='rgba(255, 0, 0, 0.2)' 
+        ))
+
+        fig_gap.add_trace(go.Scatter(
+            x=gap_df["Year"], y=gap_df["Gap"],
+            mode='lines+markers', name='Calculated Capacity Gap (MW)',
+            line=dict(color='orange', width=2, dash='dashdot'),
+            hovertemplate="Unmet Gap: %{y:,.0f} MW<extra></extra>"
+        ))
+
+        fig_gap.update_layout(
+            xaxis_title="Year",
+            yaxis_title="Megawatts (MW)",
+            hovermode="x unified",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            height=500,
+            margin=dict(l=0, r=0, t=30, b=0)
+        )
+        st.plotly_chart(fig_gap, width="stretch")
 
 def render_tab_deployment():
     st.header("Nuclear Deployment Plan")
@@ -134,24 +180,41 @@ def render_tab_deployment():
     
     col1, col2 = st.columns([1, 2])
     with col1:
-        if st.button("🚀 Load Suggested Plan to Reach 50% Nuclear"):
-            try:
-                scenario_df = pd.read_csv(r"deployment_plan_50.csv")
-                st.session_state.deployment_df = scenario_df
-                st.success("50% Nuclear Scenario Loaded! Check Tab D for results.")
-                st.rerun() 
-            except FileNotFoundError:
-                st.error("Could not find the file at E:\\thailand_energy_model\\data\\deployment_plan_50.csv")
+        st.subheader("Load a Pre-built Scenario:")
+        
+        scenario_choice = st.selectbox(
+            "Select Deployment Strategy:",
+            ["-- Select a Scenario --", "Aggressive Mix (50% Target)", "SMR Focus (Small Reactors)", "Heavy Baseload (Large Reactors)"]
+        )
+        
+        if st.button("🚀 Load Scenario"):
+            file_map = {
+                "Aggressive Mix (50% Target)": "deployment_plan_50.csv",
+                "SMR Focus (Small Reactors)": "deployment_plan_smr.csv",
+                "Heavy Baseload (Large Reactors)": "deployment_plan_baseload.csv"
+            }
+            
+            if scenario_choice in file_map:
+                try:
+                    file_name = file_map[scenario_choice]
+                    scenario_df = pd.read_csv(file_name)
+                    st.session_state.deployment_df = scenario_df
+                    st.success(f"'{scenario_choice}' Loaded! Check Tab D for results.")
+                    st.rerun() 
+                except FileNotFoundError:
+                    st.error(f"Could not find '{file_name}'. Make sure you uploaded it to GitHub!")
+            else:
+                st.warning("Please select a scenario from the dropdown first.")
     
     st.divider() 
 
-    # Layout for Tab C: Data Editor on left, Graph on right
+    # Split into Table and Chart columns
     col_table, col_chart = st.columns([1, 1.8])
 
     with col_table:
         st.session_state.deployment_df = st.data_editor(
             st.session_state.deployment_df,
-            width="content", 
+            width="content",
             hide_index=True,
             num_rows="fixed",
             column_config={
@@ -190,14 +253,25 @@ def render_tab_deployment():
         )
         st.plotly_chart(fig_added, width="stretch")
 
+
 def render_tab_dashboard():
-    st.header("Capacity vs. Demand Projection")
+    st.header("Total Grid Solution & Environmental Impact")
     
     calc_df = st.session_state.pdp_df.copy()
     
+    # Force rename if the browser cache is holding onto the old name
+    if "Peak Demand (MW)" not in calc_df.columns and "PDP Contracted Peak (MW)" in calc_df.columns:
+        calc_df = calc_df.rename(columns={"PDP Contracted Peak (MW)": "Peak Demand (MW)"})
+    
+    # Bring in the frozen capacity from Tab B
+    if "base_capacity" not in st.session_state:
+        st.session_state.base_capacity = 56000.0
+    calc_df["Baseline Capacity (MW)"] = st.session_state.base_capacity
+    
     # Base computations
-    calc_df["Average Demand (MW)"] = calc_df["PDP Contracted Peak (MW)"] / 1.39
+    calc_df["Average Demand (MW)"] = calc_df["Peak Demand (MW)"] / 1.39
     calc_df["Annual Energy Demand (GWh)"] = (calc_df["Average Demand (MW)"] * 8760) / 1000
+    calc_df["Capacity Gap (MW)"] = (calc_df["Peak Demand (MW)"] - calc_df["Baseline Capacity (MW)"]).clip(lower=0) 
     
     # Nuclear computations
     deploy_df = st.session_state.deployment_df.copy()
@@ -212,19 +286,16 @@ def render_tab_dashboard():
         calc_df["ACP600 Capacity"] + 
         calc_df["HTR Capacity"]
     )
-    calc_df["Total Grid Capacity (MW)"] = calc_df["Contracted Capacity (MW)"] + calc_df["Total Nuclear Added (MW)"]
     
+    # Total Grid is now just the flat 2026 capacity + Nuclear Additions
+    calc_df["Total Grid Capacity (MW)"] = calc_df["Baseline Capacity (MW)"] + calc_df["Total Nuclear Added (MW)"]
+    
+    # Percentage computation
     calc_df["Nuclear Percentage (%)"] = np.where(
         calc_df["Total Grid Capacity (MW)"] > 0,
         (calc_df["Total Nuclear Added (MW)"] / calc_df["Total Grid Capacity (MW)"]) * 100,
         0
     )
-    
-    # --- GAP COMPUTATION ---
-    fixed_2026_cap = calc_df.loc[calc_df["Year"] == 2026, "Contracted Capacity (MW)"].values[0]
-    calc_df["Current 2026 Capacity (MW)"] = fixed_2026_cap
-    calc_df["Capacity Gap (MW)"] = calc_df["PDP Contracted Peak (MW)"] - calc_df["Current 2026 Capacity (MW)"]
-    calc_df["Capacity Gap (MW)"] = calc_df["Capacity Gap (MW)"].clip(lower=0) 
     
     # --- CARBON SAVINGS COMPUTATION ---
     # Assuming standard Thailand Grid Emission Factor: ~0.43 kg CO2 per kWh = 430 tonnes CO2 per GWh
@@ -236,20 +307,19 @@ def render_tab_dashboard():
     crossover_years = calc_df[calc_df["Nuclear Percentage (%)"] >= 50]["Year"].values
     crossover_year = crossover_years[0] if len(crossover_years) > 0 else None
     
-    # Grid Metrics
+    # --- METRICS ---
     st.subheader("Grid Integration Metrics")
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric(label="Total Nuclear Deployed by 2056", value=f"{calc_df['Total Nuclear Added (MW)'].iloc[-1]:,.0f} MW")
-    col2.metric(label="Final Nuclear Share (2056)", value=f"{calc_df['Nuclear Percentage (%)'].iloc[-1]:.1f}%")
+    col1.metric(label="Total Nuclear Deployed", value=f"{calc_df['Total Nuclear Added (MW)'].iloc[-1]:,.0f} MW")
+    col2.metric(label="Final Nuclear Share", value=f"{calc_df['Nuclear Percentage (%)'].iloc[-1]:.1f}%")
     
     if crossover_year:
-        col3.metric(label="🎯 50% Milestone Reached In:", value=str(crossover_year))
+        col3.metric(label="🎯 50% Milestone:", value=str(crossover_year))
     else:
         col3.metric(label="🎯 50% Milestone:", value="Not Reached")
         
-    col4.metric(label="Max Capacity Gap (in 2056)", value=f"{calc_df['Capacity Gap (MW)'].iloc[-1]:,.0f} MW", delta="- Needs to be filled", delta_color="inverse")
+    col4.metric(label="Max Capacity Gap (in 2056)", value=f"{calc_df['Capacity Gap (MW)'].iloc[-1]:,.0f} MW")
 
-    # Carbon Metrics
     st.subheader("Environmental Impact Metrics")
     c_col1, c_col2, c_col3 = st.columns(3)
     c_col1.metric(label="Total Clean Energy Generated (2056)", value=f"{calc_df['Nuclear Energy Generated (GWh)'].iloc[-1]:,.0f} GWh/yr")
@@ -259,32 +329,30 @@ def render_tab_dashboard():
     st.divider()
 
     # ==========================================
-    # --- PRIMARY CHART ---
+    # --- PRIMARY CHART (Grid Capacity) ---
     # ==========================================
     fig = go.Figure()
 
+    # Peak Demand Line
     fig.add_trace(go.Scatter(
-        x=calc_df["Year"], y=calc_df["PDP Contracted Peak (MW)"],
-        mode='lines', name='Contracted Peak Demand (MW)',
+        x=calc_df["Year"], y=calc_df["Peak Demand (MW)"],
+        mode='lines', name='Projected Peak Demand (MW)',
         line=dict(color='red', width=3, dash='dash')
     ))
     
-    fig.add_trace(go.Scatter(
-        x=calc_df["Year"], y=calc_df["Average Demand (MW)"],
-        mode='lines', name='Calculated Average Demand (MW)',
-        line=dict(color='orange', width=2, dash='dot')
-    ))
-
+    # Baseline Capacity (Now purely a flat block)
     fig.add_trace(go.Bar(
-        x=calc_df["Year"], y=calc_df["Contracted Capacity (MW)"],
-        name='Baseline Contracted Capacity', marker_color='#d3d3d3', hovertemplate="Baseline: %{y:,.0f} MW<extra></extra>"
+        x=calc_df["Year"], y=calc_df["Baseline Capacity (MW)"],
+        name='Frozen 2026 Grid Capacity', marker_color='#d3d3d3', hovertemplate="Baseline: %{y:,.0f} MW<extra></extra>"
     ))
 
+    # Stacked Nuclear Capacities
     fig.add_trace(go.Bar(x=calc_df["Year"], y=calc_df["HPR1000 Capacity"], name='HPR1000 (1200 MW)', marker_color='#1f77b4'))
     fig.add_trace(go.Bar(x=calc_df["Year"], y=calc_df["ACP100 Capacity"], name='ACP100 (100 MW)', marker_color='#ff7f0e'))
     fig.add_trace(go.Bar(x=calc_df["Year"], y=calc_df["ACP600 Capacity"], name='ACP600 (600 MW)', marker_color='#2ca02c'))
     fig.add_trace(go.Bar(x=calc_df["Year"], y=calc_df["HTR Capacity"], name='HTR (210 MW)', marker_color='#d62728'))
 
+    # Percentage Line
     fig.add_trace(go.Scatter(
         x=calc_df["Year"], y=calc_df["Nuclear Percentage (%)"],
         mode='lines+markers+text', name='Nuclear Share (%)', yaxis='y2', 
@@ -295,7 +363,7 @@ def render_tab_dashboard():
     ))
 
     fig.update_layout(
-        barmode='stack', title="Primary View: Closing the Capacity Gap with Nuclear",
+        barmode='stack', title="Filling the Capacity Gap with Nuclear Power",
         xaxis_title="Year", yaxis_title="Capacity / Demand (MW)",
         yaxis2=dict(
             title=dict(text="Nuclear Share (%)", font=dict(color="#4B0082")), 
@@ -307,69 +375,43 @@ def render_tab_dashboard():
     st.plotly_chart(fig, width="stretch")
     
     st.divider()
-    
+
     # ==========================================
-    # --- SECONDARY CHART (CARBON & GAP) ---
+    # --- SECONDARY CHART (CARBON FOOTPRINT) ---
     # ==========================================
-    col_gap, col_carbon = st.columns(2)
+    st.subheader("Cumulative Carbon Footprint Reduction")
+    st.markdown("Assuming ~0.43 kg CO2/kWh displaced by clean nuclear energy generation.")
+    fig_carbon = go.Figure()
 
-    with col_gap:
-        st.subheader("The Expanding Capacity Gap")
-        st.markdown("If no new power is built after 2026.")
-        fig_gap = go.Figure()
+    fig_carbon.add_trace(go.Scatter(
+        x=calc_df["Year"], y=calc_df["Cumulative CO2 Saved (Million Tonnes)"],
+        mode='lines', name='Cumulative CO2 Saved',
+        line=dict(color='#2ca02c', width=4),
+        fill='tozeroy', fillcolor='rgba(44, 160, 44, 0.2)'
+    ))
 
-        fig_gap.add_trace(go.Scatter(
-            x=calc_df["Year"], y=calc_df["Current 2026 Capacity (MW)"],
-            mode='lines', name='Current 2026 Capacity',
-            line=dict(color='gray', width=3)
-        ))
-
-        fig_gap.add_trace(go.Scatter(
-            x=calc_df["Year"], y=calc_df["PDP Contracted Peak (MW)"],
-            mode='lines', name='Projected Peak Demand',
-            line=dict(color='red', width=3),
-            fill='tonexty', fillcolor='rgba(255, 0, 0, 0.2)' 
-        ))
-
-        fig_gap.update_layout(
-            xaxis_title="Year", yaxis_title="Megawatts (MW)",
-            hovermode="x unified", legend=dict(orientation="h", yanchor="bottom", y=1.02),
-            height=400, margin=dict(l=0, r=0, t=30, b=0)
-        )
-        st.plotly_chart(fig_gap, width="stretch")
-
-    with col_carbon:
-        st.subheader("Cumulative Carbon Footprint Reduction")
-        st.markdown("Assuming ~0.43 kg CO2/kWh displaced by clean nuclear.")
-        fig_carbon = go.Figure()
-
-        fig_carbon.add_trace(go.Scatter(
-            x=calc_df["Year"], y=calc_df["Cumulative CO2 Saved (Million Tonnes)"],
-            mode='lines', name='Cumulative CO2 Saved',
-            line=dict(color='#2ca02c', width=4),
-            fill='tozeroy', fillcolor='rgba(44, 160, 44, 0.2)'
-        ))
-
-        fig_carbon.update_layout(
-            xaxis_title="Year", yaxis_title="Million Tonnes CO2",
-            hovermode="x unified", legend=dict(orientation="h", yanchor="bottom", y=1.02),
-            height=400, margin=dict(l=0, r=0, t=30, b=0)
-        )
-        st.plotly_chart(fig_carbon, width="stretch")
+    fig_carbon.update_layout(
+        xaxis_title="Year", yaxis_title="Million Tonnes CO2",
+        hovermode="x unified", legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        height=400, margin=dict(l=0, r=0, t=30, b=0)
+    )
+    st.plotly_chart(fig_carbon, width="stretch")
 
     # ==========================================
     # --- DATA TABLE ---
     # ==========================================
     with st.expander("View Complete Year-by-Year Data Table"):
         display_cols = [
-            "Year", "PDP Contracted Peak (MW)", "Current 2026 Capacity (MW)", 
-            "Total Grid Capacity (MW)", "Total Nuclear Added (MW)", 
-            "Nuclear Percentage (%)", "Cumulative CO2 Saved (Million Tonnes)"
+            "Year", "Peak Demand (MW)", "Baseline Capacity (MW)", 
+            "Capacity Gap (MW)", "Total Grid Capacity (MW)", 
+            "Total Nuclear Added (MW)", "Nuclear Percentage (%)",
+            "Cumulative CO2 Saved (Million Tonnes)"
         ]
         
         st.dataframe(calc_df[display_cols].style.format({
-            "PDP Contracted Peak (MW)": "{:,.0f}",
-            "Current 2026 Capacity (MW)": "{:,.0f}",
+            "Peak Demand (MW)": "{:,.0f}",
+            "Baseline Capacity (MW)": "{:,.0f}",
+            "Capacity Gap (MW)": "{:,.0f}",
             "Total Grid Capacity (MW)": "{:,.0f}",
             "Total Nuclear Added (MW)": "{:,.0f}",
             "Nuclear Percentage (%)": "{:.1f}%",
@@ -383,27 +425,29 @@ def render_tab_dashboard():
 def main():
     st.set_page_config(page_title="Thailand Nuclear Deployment Model", layout="wide")
     
+    # --- TITLE PLACED HERE (BOLDED) ---
+    st.title("**🇹🇭 Thailand Grid Capacity & Nuclear Deployment Model**")
+    
     if not check_password():
         st.stop()
         
-    # --- AGGRESSIVE CACHE FIX ---
-    if "pdp_df" in st.session_state:
-        if "PDP Contracted Peak (MW)" not in st.session_state.pdp_df.columns or "Contracted Capacity (MW)" not in st.session_state.pdp_df.columns:
-            del st.session_state["pdp_df"]
-            
+    # --- SAFETY CATCH FOR CACHE ---
     if "pdp_df" not in st.session_state:
         st.session_state.pdp_df = initialize_pdp_data()
+    else:
+        if "PDP Contracted Peak (MW)" in st.session_state.pdp_df.columns:
+            st.session_state.pdp_df.rename(columns={"PDP Contracted Peak (MW)": "Peak Demand (MW)"}, inplace=True)
+        if "Contracted Capacity (MW)" in st.session_state.pdp_df.columns:
+            st.session_state.pdp_df = st.session_state.pdp_df.drop(columns=["Contracted Capacity (MW)"])
 
     if "deployment_df" not in st.session_state:
         st.session_state.deployment_df = initialize_deployment_data()
-        
-    st.title("🇹🇭 Thailand Grid Capacity & Nuclear Deployment Model")
 
     tab1, tab2, tab3, tab4 = st.tabs([
         "a) Model Explanation", 
-        "b) Demand Table (PDP 2024 Draft)", 
+        "b) Demand Forecast & Gap Analysis", 
         "c) Nuclear Input Deployment", 
-        "d) Capacity vs. Demand Projection"
+        "d) Dashboard: Grid Solution"
     ])
     
     with tab1:
